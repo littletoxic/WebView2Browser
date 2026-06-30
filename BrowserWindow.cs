@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using Microsoft.Web.WebView2.Core;
@@ -17,8 +18,18 @@ internal sealed class BrowserWindow(SafeHandle instanceHandle, string windowClas
     private const int MinWindowHeight = 75;
     private const int InitialWidth = 1200;
     private const int InitialHeight = 900;
+    private const string EvergreenBootstrapperFileName = "MicrosoftEdgeWebView2Setup.exe";
+    private const string EvergreenBootstrapperDownloadUri = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
     private const string MissingRuntimeMessage =
         "Microsoft Edge WebView2 Runtime is not installed. Install the Evergreen WebView2 Runtime, then restart WebView2Browser.";
+    private const string DownloadRuntimePrompt =
+        "Microsoft Edge WebView2 Runtime is not installed. Download and install it from Microsoft now?";
+    private const string DownloadRuntimeFailureMessage =
+        "WebView2 Runtime bootstrapper download failed. Install the Evergreen WebView2 Runtime, then restart WebView2Browser.";
+    private const string InstallRuntimeFailureMessage =
+        "WebView2 Runtime installation did not complete. Install the Evergreen WebView2 Runtime, then restart WebView2Browser.";
+
+    private static readonly HttpClient s_httpClient = new();
 
     private readonly Dictionary<int, BrowserTab> _tabs = [];
     private HWND _hwnd;
@@ -68,7 +79,7 @@ internal sealed class BrowserWindow(SafeHandle instanceHandle, string windowClas
     {
         try
         {
-            if (!TryGetWebView2RuntimeVersion())
+            if (!await EnsureWebView2RuntimeAsync())
             {
                 return;
             }
@@ -92,6 +103,42 @@ internal sealed class BrowserWindow(SafeHandle instanceHandle, string windowClas
         }
     }
 
+    private async Task<bool> EnsureWebView2RuntimeAsync()
+    {
+        if (TryGetWebView2RuntimeVersion())
+        {
+            return true;
+        }
+
+        MESSAGEBOX_RESULT result = MessageBox(
+            _hwnd,
+            DownloadRuntimePrompt,
+            WindowTitle,
+            MESSAGEBOX_STYLE.MB_YESNO | MESSAGEBOX_STYLE.MB_ICONQUESTION);
+
+        if (result != MESSAGEBOX_RESULT.IDYES)
+        {
+            ShowError(MissingRuntimeMessage);
+            return false;
+        }
+
+        string? installerPath = await TryDownloadWebView2BootstrapperAsync();
+        if (installerPath is null)
+        {
+            ShowError(DownloadRuntimeFailureMessage);
+            return false;
+        }
+
+        if (await TryInstallWebView2RuntimeAsync(installerPath) &&
+            TryGetWebView2RuntimeVersion())
+        {
+            return true;
+        }
+
+        ShowError(InstallRuntimeFailureMessage);
+        return false;
+    }
+
     private bool TryGetWebView2RuntimeVersion()
     {
         try
@@ -106,13 +153,77 @@ internal sealed class BrowserWindow(SafeHandle instanceHandle, string windowClas
         catch (FileNotFoundException ex)
         {
             LogWebView2Failure(ex);
-            ShowError(MissingRuntimeMessage);
             return false;
         }
 
         Program.LogFailure("WebView2 Runtime detection returned no available runtime.");
-        ShowError(MissingRuntimeMessage);
         return false;
+    }
+
+    private static async Task<string?> TryDownloadWebView2BootstrapperAsync()
+    {
+        try
+        {
+            string downloadDirectory = Path.Combine(Path.GetTempPath(), WindowTitle);
+            Directory.CreateDirectory(downloadDirectory);
+
+            string downloadPath = Path.Combine(downloadDirectory, EvergreenBootstrapperFileName);
+            Program.LogFailure($"Downloading WebView2 Runtime bootstrapper: {EvergreenBootstrapperDownloadUri}");
+
+            using HttpResponseMessage response = await s_httpClient.GetAsync(
+                EvergreenBootstrapperDownloadUri,
+                HttpCompletionOption.ResponseHeadersRead);
+
+            response.EnsureSuccessStatusCode();
+
+            await using Stream contentStream = await response.Content.ReadAsStreamAsync();
+            await using FileStream fileStream = new(
+                downloadPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None);
+
+            await contentStream.CopyToAsync(fileStream);
+            Program.LogFailure($"WebView2 Runtime bootstrapper downloaded: {downloadPath}");
+            return downloadPath;
+        }
+        catch (Exception ex)
+        {
+            Program.LogFailure(ex.ToString());
+            return null;
+        }
+    }
+
+    private static async Task<bool> TryInstallWebView2RuntimeAsync(string installerPath)
+    {
+        try
+        {
+            Program.LogFailure($"Starting WebView2 Runtime installer: {installerPath}");
+
+            ProcessStartInfo startInfo = new()
+            {
+                FileName = installerPath,
+                Arguments = "/silent /install",
+                UseShellExecute = true,
+                WorkingDirectory = Path.GetDirectoryName(installerPath) ?? AppContext.BaseDirectory,
+            };
+
+            using Process? process = Process.Start(startInfo);
+            if (process is null)
+            {
+                Program.LogFailure("WebView2 Runtime installer process was not created.");
+                return false;
+            }
+
+            await process.WaitForExitAsync();
+            Program.LogFailure($"WebView2 Runtime installer exited with code {process.ExitCode}.");
+            return process.ExitCode == 0;
+        }
+        catch (Exception ex)
+        {
+            Program.LogFailure(ex.ToString());
+            return false;
+        }
     }
 
     private static void LogWebView2Failure(Exception ex)
