@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Microsoft.Web.WebView2.Core;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Gdi;
@@ -15,7 +14,7 @@ internal static class Program
     private static BrowserWindow? s_window;
 
     [STAThread]
-    private static unsafe int Main()
+    private static int Main()
     {
         try
         {
