@@ -18,6 +18,8 @@ internal sealed class BrowserWindow(SafeHandle instanceHandle, string windowClas
     private const int MinWindowHeight = 75;
     private const int InitialWidth = 1200;
     private const int InitialHeight = 900;
+    private const string MissingRuntimeMessage =
+        "Microsoft Edge WebView2 Runtime is not installed. Install the Evergreen WebView2 Runtime, then restart WebView2Browser.";
 
     private readonly Dictionary<int, BrowserTab> _tabs = [];
     private HWND _hwnd;
@@ -67,6 +69,11 @@ internal sealed class BrowserWindow(SafeHandle instanceHandle, string windowClas
     {
         try
         {
+            if (!TryGetWebView2RuntimeVersion())
+            {
+                return;
+            }
+
             string appDataDirectory = GetAppDataDirectory();
             string userDataDirectory = Path.Combine(appDataDirectory, "User Data");
             string browserDataDirectory = Path.Combine(appDataDirectory, "Browser Data");
@@ -81,9 +88,37 @@ internal sealed class BrowserWindow(SafeHandle instanceHandle, string windowClas
         }
         catch (Exception ex)
         {
-            Program.LogFailure(ex.ToString());
+            LogWebView2Failure(ex);
             ShowError("WebView2 environment creation failed.");
         }
+    }
+
+    private bool TryGetWebView2RuntimeVersion()
+    {
+        try
+        {
+            string? version = CoreWebView2Environment.GetAvailableBrowserVersionString(null);
+            if (!string.IsNullOrWhiteSpace(version) &&
+                !string.Equals(version, "0.0.0.0", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        catch (FileNotFoundException ex)
+        {
+            LogWebView2Failure(ex);
+            ShowError(MissingRuntimeMessage);
+            return false;
+        }
+
+        Program.LogFailure("WebView2 Runtime detection returned no available runtime.");
+        ShowError(MissingRuntimeMessage);
+        return false;
+    }
+
+    private static void LogWebView2Failure(Exception ex)
+    {
+        Program.LogFailure($"HResult=0x{ex.HResult:X8}{Environment.NewLine}{ex}");
     }
 
     private static string GetAppDataDirectory()
