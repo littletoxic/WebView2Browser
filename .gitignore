@@ -1,0 +1,10 @@
+.vs/
+bin/
+obj/
+*.log
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.WebView2/
+WebView2Browser.exe.WebView2/
